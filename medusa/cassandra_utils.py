@@ -29,7 +29,7 @@ import uuid
 import yaml
 
 from subprocess import PIPE
-from retrying import retry
+
 from cassandra.cluster import Cluster, ExecutionProfile
 from cassandra.policies import WhiteListRoundRobinPolicy
 from cassandra.auth import PlainTextAuthProvider
@@ -92,6 +92,7 @@ class CqlSessionProvider(object):
         if retry:
             max_retries = 5
             attempts = 0
+            delay = 5
 
             while attempts < max_retries:
                 try:
@@ -99,7 +100,6 @@ class CqlSessionProvider(object):
                     return CqlSession(session, self._cassandra_config.resolve_ip_addresses)
                 except Exception as e:
                     logging.debug('Failed to create session', exc_info=e)
-                delay = 5 * (2 ** (attempts + 1))
                 time.sleep(delay)
                 attempts = attempts + 1
             raise Exception('Could not establish CQL session after {attempts}'.format(attempts=attempts))
@@ -425,13 +425,13 @@ class Cassandra(object):
             logging.debug('Executing: {}'.format(' '.join(cmd)))
             try:
                 output = subprocess.check_output(cmd, universal_newlines=True)
-                logging.debug('nodetool output: {}'.format(output))
+                logging.debug('nodetool output: %s', output)
             except subprocess.CalledProcessError as e:
-                logging.debug('nodetool resulted in error: {}'.format(e.output))
+                logging.debug('nodetool resulted in error: %s', e.output)
                 logging.warning(
-                    'Medusa may have failed at cleaning up snapshot {}. '
-                    'Check if the snapshot exists and clear it manually '
-                    'by running: {}'.format(tag, ' '.join(cmd)))
+                    'Medusa may have failed at cleaning up snapshot %s. '
+                    'Check if the snapshot exists and clear it manually by running: %s',
+                    tag, ' '.join(cmd))
 
     def list_snapshotnames(self):
         return {
@@ -540,27 +540,45 @@ class Cassandra(object):
                 cassandra_yaml.write('\nauto_bootstrap: false')
 
 
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=5000, wait_exponential_max=120000)
-def wait_for_node_to_come_up(config, host):
-    logging.info('Waiting for Cassandra to come up on {}'.format(host))
-
-    if not is_node_up(config, host):
-        raise CassandraNodeNotUpError(host)
-    else:
-        logging.info('Cassandra is up on {}'.format(host))
-        return True
+def wait_for_node_to_come_up(config, host, retries=10, delay=6):
+    logging.info('Waiting for Cassandra to come up on %s', host)
+    check_function = is_node_up
+    if not _wait_for_node(config, host, check_function, retries, delay):
+        raise CassandraNodeNotUpError(host, retries)
+    logging.info('Cassandra is up on %s', host)
 
 
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=5000, wait_exponential_max=120000)
-def wait_for_node_to_go_down(config, host):
-    logging.info('Waiting for Cassandra to go down on {}'.format(host))
+def wait_for_node_to_go_down(config, host, retries=10, delay=6):
+    logging.info('Waiting for Cassandra to go down on %s', host)
 
-    if is_node_up(config, host):
+    def check_function(config, host):
+        return not is_node_up(config, host)
+
+    if not _wait_for_node(config, host, check_function, retries, delay):
         # TODO can do a kill here
-        raise CassandraNodeNotDownError(host)
-    else:
-        logging.info('Cassandra is down {}'.format(host))
-        return True
+        raise CassandraNodeNotDownError(host, retries)
+    logging.info('Cassandra is down %s', host)
+
+
+def _wait_for_node(config, host, check_function, retries, delay):
+    """
+        Polls the node until the check_function check passes.
+
+        :param host: The target host on which to run the check
+        :param check_function: called to determine node state
+        :param retries: The number of times to retry the health check. Defaults to 10
+        :param delay: A delay in seconds to wait before polling again. Defaults to 6 seconds.
+        :return: True when the node is determined to be up. If the retries are exhausted, returns False
+    """
+    attempts = 0
+    while attempts < retries:
+        if check_function(config, host):
+            return True
+        else:
+            time.sleep(delay)
+            attempts = attempts + 1
+
+    return False
 
 
 def is_node_up(config, host):
@@ -589,55 +607,37 @@ def is_node_up(config, host):
         cassandra = Cassandra(config.cassandra)
         native_port = cassandra.native_port
         rpc_port = cassandra.rpc_port
+        nc_timeout = 10
+        args = ['timeout', str(nc_timeout), 'nc', '-zv', host]
         if health_check == 'thrift':
-            return is_cassandra_up(host, rpc_port)
+            return is_cassandra_up(args, rpc_port)
         elif health_check == 'all':
-            return is_cassandra_up(host, rpc_port) and is_cassandra_up(host, native_port)
+            return is_cassandra_up(list(args), rpc_port) and is_cassandra_up(list(args), native_port)
         else:
             # cql only
-            return is_cassandra_up(host, native_port)
+            return is_cassandra_up(args, native_port)
 
 
 def is_ccm_up(args, nodetool_command):
     try:
         args.append(nodetool_command)
         output = subprocess.check_output(args, stderr=subprocess.STDOUT, universal_newlines=True)
-        # ccm returns either 'running' or 'not running'.
-        # Testing on finding 'running' is not enough!
-        if output.find('not running') == -1 and output.find('running') >= 0:
-            logging.debug('CCM native transport is now up')
-            return True
-        else:
-            logging.debug('CCM native transport is not up yet')
-            return False
+        return output.find('running') >= 0
     except subprocess.CalledProcessError as e:
-        logging.debug('CCM native transport is not up yet', exc_info=e)
+        # logging.debug('The native transport is not up yet %s', logging_suffix)
+        logging.debug('The native transport is not up yet', exc_info=e)
         return False
 
 
-def is_open(host, port):
-    timeout = 3
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    is_accessible = False
+def is_cassandra_up(args, port):
     try:
-        s.connect((host, port))
-        s.shutdown(socket.SHUT_RDWR)
-        is_accessible = True
-    except socket.error as e:
-        logging.debug('Port {} close on host {}'.format(port, host), exc_info=e)
-        is_accessible = False
-    finally:
-        s.close()
-        return is_accessible
-
-
-@retry(stop_max_attempt_number=5, wait_exponential_multiplier=5000, wait_exponential_max=120000)
-def is_cassandra_up(host, port):
-    if is_open(host, port):
+        args.append(port)
+        subprocess.check_call(args)
+        # check_call returns if call succeeded (returncode is 0). If not exception is triggered
         return True
-    else:
-        logging.debug('The node {} is not up yet...'.format(host))
+    except subprocess.CalledProcessError:
+        logging.debug('The node is not up yet')
+        return False
 
 
 class CassandraNodeNotUpError(Exception):
@@ -650,8 +650,8 @@ class CassandraNodeNotUpError(Exception):
         attempts -- the number of times the check was performed
     """
 
-    def __init(self, host):
-        msg = 'Cassandra node {} is still down...'.format(host)
+    def __init(self, host, attempts):
+        msg = 'Could not verify that Cassandra is up on {host} after {attempts}'.format(host=host, attempts=attempts)
         super(CassandraNodeNotUpError, self).__init__(msg)
 
 
@@ -660,6 +660,6 @@ class CassandraNodeNotDownError(Exception):
     Raised when we give up waiting on a node to go down, meaning nodetool statusbinary and/or statusthrift keep
     reporting open ports.
     """
-    def __init(self, host):
-        msg = 'Cassandra node {} is still up...'.format(host)
+    def __init(self, host, attempts):
+        msg = 'Could not verify that Cassandra is down on {host} after {attempts}'.format(host=host, attempts=attempts)
         super(CassandraNodeNotDownError, self).__init__(msg)

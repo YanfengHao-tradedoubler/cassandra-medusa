@@ -22,7 +22,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name='cassandra-medusa',
-    version='0.7.2-dev',
+    version='0.7.1',
     author='The Last Pickle',
     author_email='medusa@thelastpickle.com',
     url='https://github.com/thelastpickle/cassandra-medusa',
@@ -53,7 +53,6 @@ setuptools.setup(
         'pycrypto>=2.6.1',
         'retrying>=1.3.3',
         'parallel-ssh==1.9.1',
-        'ssh2-python==0.19.0',  # <-- ssh2-python==0.20.0 is broken, 0.22.0+ should work.
         'requests==2.22.0'
     ],
     extras_require={
