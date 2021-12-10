@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+#
 # Copyright 2019 Spotify AB. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-#!/usr/bin/env bash
 set -x
 # Keep the following rm for the sake of running the integration tests in CI
 rm -Rf .python-version
@@ -22,6 +22,9 @@ STORAGE_TAGS=""
 LOCAL="yes"
 S3="no"
 GCS="no"
+AZURE="no"
+IBM="no"
+MINIO="no"
 LOGGING_FLAGS=""
 
 while test $# -gt 0; do
@@ -36,6 +39,10 @@ while test $# -gt 0; do
       echo "--no-local                                  Don't run the tests with the local storage backend"
       echo "--s3                                        Include S3 in the storage backends"
       echo "--gcs                                       Include GCS in the storage backends"
+      echo "--azure                                     Include Azure in the storage backends"
+      echo "--ibm                                       Include IBM in the storage backends"
+      echo "--minio                                     Include MinIO in the storage backends"
+      echo "--cassandra-version                         Cassandra version to test"
       echo "-v                                          Verbose output (logging won't be captured by behave)"
       exit 0
       ;;
@@ -66,8 +73,24 @@ while test $# -gt 0; do
       GCS="yes"
       shift
       ;;
+    --azure)
+      AZURE="yes"
+      shift
+      ;;
+    --ibm)
+      IBM="yes"
+      shift
+      ;;
+    --minio)
+      MINIO="yes"
+      shift
+      ;;
     -v)
       LOGGING="--no-capture --no-capture-stderr --format=plain"
+      shift
+      ;;
+    --cassandra-version*)
+      CASSANDRA_VERSION=`echo $1 | sed -e 's/^[^=]*=//g'`
       shift
       ;;
     *)
@@ -79,6 +102,7 @@ done
 export LOCAL_JMX=yes
 export PYTHONWARNINGS="ignore"
 pip3 install -r requirements.txt
+pip3 install -r requirements-grpc.txt
 pip3 install -r requirements-test.txt
 cd tests/integration
 if [ "$LOCAL" == "yes" ]
@@ -106,4 +130,42 @@ then
     fi
 fi
 
-PYTHONPATH=../.. behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING
+if [ "$AZURE" == "yes" ]
+then
+    if [ "$STORAGE_TAGS" == "" ]
+    then
+        STORAGE_TAGS="@azure"
+    else
+        STORAGE_TAGS="${STORAGE_TAGS},@azure"
+    fi
+fi
+
+if [ "$IBM" == "yes" ]
+then
+    if [ "$STORAGE_TAGS" == "" ]
+    then
+        STORAGE_TAGS="@ibm"
+    else
+        STORAGE_TAGS="${STORAGE_TAGS},@ibm"
+    fi
+fi
+
+if [ "$MINIO" == "yes" ]
+then
+    if [ "$STORAGE_TAGS" == "" ]
+    then
+        STORAGE_TAGS="@minio"
+    else
+        STORAGE_TAGS="${STORAGE_TAGS},@minio"
+    fi
+fi
+
+if [[ -z "$CASSANDRA_VERSION" ]]; then
+   echo "Cassandra version is not set, using default."
+   CASSANDRA_VERSION_FLAG=""
+else
+   echo "Cassandra version is set to ${CASSANDRA_VERSION}"
+   CASSANDRA_VERSION_FLAG="-D cassandra-version=${CASSANDRA_VERSION}"
+fi
+
+PYTHONPATH=../.. coverage run --source='../../medusa' -m behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING $CASSANDRA_VERSION_FLAG

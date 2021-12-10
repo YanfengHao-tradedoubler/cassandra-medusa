@@ -87,6 +87,7 @@ class AbstractStorage(abc.ABC):
         return medusa.storage.concurrent.upload_blobs(self, src, dest, self.bucket,
                                                       max_workers=self.config.concurrent_transfers)
 
+    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
     def get_blob(self, path):
         try:
             logging.debug("[Storage] Getting object {}".format(path))
@@ -196,7 +197,7 @@ class AbstractStorage(abc.ABC):
 
     @staticmethod
     @abc.abstractmethod
-    def blob_matches_manifest(blob, object_in_manifest):
+    def blob_matches_manifest(blob, object_in_manifest, enable_md5_checks=False):
         """
         Compares a blob with its records in the manifest. This happens during backup verification.
 
@@ -208,13 +209,14 @@ class AbstractStorage(abc.ABC):
 
         :param blob: blob from (any) storage
         :param object_in_manifest: a record (dict) from the Medusa manifest
+        :param enable_md5_checks: if enabled, calculates the MD5 hash of the file to check file integrity
         :return: boolean informing if the blob matches or not
         """
         pass
 
     @staticmethod
     @abc.abstractmethod
-    def file_matches_cache(src, cached_item, threshold=None):
+    def file_matches_cache(src, cached_item, threshold=None, enable_md5_checks=False):
         """
         Compares a local file with its entry in the cache of backed up items. This happens when doing an actual backup.
 
@@ -224,6 +226,8 @@ class AbstractStorage(abc.ABC):
         :param src: typically, local file that comes as a string/path
         :param cached_item: usually a reference to a item in the storage, mostly a dict. Likely a manifest object
         :param threshold: files bigger than this are digested by chunks
+        :param enable_md5_checks: boolean flag to enable md5 file generation and comparison to the md5
+                found in the manifest (only applicable to some cloud storage implementations that compare md5 hashes)
         :return: boolean informing if the files match or not
         """
         pass
@@ -242,4 +246,8 @@ class AbstractStorage(abc.ABC):
         :param hash_in_manifest: hash of the blob/file in the manifest
         :return: boolean informing if the blob matches or not
         """
+        pass
+
+    def prepare_download(self):
+        # Override for each child class
         pass

@@ -24,7 +24,7 @@ import unittest
 
 import medusa.storage.abstract_storage
 
-from medusa.backup import generate_md5_hash
+from medusa.storage.abstract_storage import AbstractStorage
 from medusa.config import MedusaConfig, StorageConfig, _namedtuple_from_dict, CassandraConfig
 from medusa.index import build_indices
 from medusa.storage import Storage
@@ -60,12 +60,15 @@ class RestoreNodeTest(unittest.TestCase):
         }
 
         self.config = MedusaConfig(
+            file_path=None,
             storage=_namedtuple_from_dict(StorageConfig, config['storage']),
             cassandra=_namedtuple_from_dict(CassandraConfig, config['cassandra']),
             monitoring={},
             ssh=None,
             checks=None,
-            logging=None
+            logging=None,
+            grpc=None,
+            kubernetes=None,
         )
 
         self.storage = Storage(config=self.config.storage)
@@ -156,6 +159,7 @@ class RestoreNodeTest(unittest.TestCase):
             checksum_full = hashlib.md5(tf.read()).digest()
             digest_full = base64.encodestring(checksum_full).decode('UTF-8').strip()
 
+            generate_md5_hash = AbstractStorage.generate_md5_hash
             # compute checksum using default-size chunks
             tf.seek(0)
             digest_chunk = generate_md5_hash(tf.name)

@@ -5,14 +5,18 @@ Contributing
 
 This project adheres to the [Spotify FOSS Code of Conduct][code-of-conduct]. By participating, you are expected to honor this code.
 
-[code-of-conduct]: https://github.com/spotify/medusa/blob/master/CODE_OF_CONDUCT.md
+[code-of-conduct]: CODE_OF_CONDUCT.md
 
 # Tests
 
 Before pushing a PR, please make sure you've added the appropriate unit tests (under `/tests/`) and integration tests (under `/tests/integration/`) for the changes you are making to the codebase.
 
 We use [flake8](http://flake8.pycqa.org/en/latest/) for code style checking.  
-We use [the standard Python framework for unit tests](https://docs.python.org/3.6/library/unittest.html). 
+
+We use [pytest for unit tests](http://pytest.readthedocs.io/en/latest/).
+Older commits make use of [the standard Python framework](https://docs.python.org/3.6/library/unittest.html) and [nose](https://nose.readthedocs.io/en/latest/) but they are no longer used.
+Feel free to migrate existing tests to pytest when adding new test cases.
+
 We use [Aloe](https://aloe.readthedocs.io/en/latest/) as framework for running integration tests. As [Cucumber](https://cucumber.io/), it is a [Gherkin-based](https://cucumber.io/docs/gherkin/reference/) framework for writing test scenarios using natural language.
 
 ## Running tests
@@ -32,10 +36,10 @@ You can run checks and unit tests individually with the following commands:
 
 ```
 # Code checks
-python3 -m "flake8" --ignore=W503
+python3 -m "flake8" --ignore=W503,E402
 
 # Unit tests
-python3 -m "nose"
+python3 -m pytest
 ```
 
 ### Integration tests
@@ -93,6 +97,13 @@ Then you'll have to:
         }
 ```        
 * Place the appropriate aws `credentials` file under your home directory : `~/.aws/credentials` (see [the AWS S3 docs](docs/aws_s3_setup.md) for guidance)
+
+#### Testing on Azure
+
+Enabling `azure_blobs` will have the following requirements:
+
+* You already have a storage account and the key file for this storage account is present in your home dir as `~/medusa_azure_credentials.json`
+* You already have a Azure Blob container called `medusa-integration-tests` in your storage account.
 
 # Submitting Pull Requests
 

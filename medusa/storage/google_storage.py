@@ -30,6 +30,9 @@ from medusa.storage.abstract_storage import AbstractStorage
 from medusa.storage.google_cloud_storage.gsutil import GSUtil
 
 
+GSUTIL_MAX_FILES_PER_CHUNK = 64
+
+
 class GoogleStorage(AbstractStorage):
 
     def connect_storage(self):
@@ -74,7 +77,11 @@ class GoogleStorage(AbstractStorage):
         # so the final upload destination is `dest / parent / object`
         # this is needed to handle things like secondary indices that live in hidden folders within table folders
         new_dest = '{}/{}'.format(old_dest, parent) if parent.startswith('.') else old_dest
-        return gsutil.cp(srcs=src_paths, dst="gs://{}/{}".format(self.bucket.name, new_dest))
+        return gsutil.cp(
+            srcs=src_paths,
+            dst="gs://{}/{}".format(self.bucket.name, new_dest),
+            parallel_process_count=self.config.concurrent_transfers
+        )
 
     def download_blobs(self, srcs, dest):
 
@@ -118,26 +125,28 @@ class GoogleStorage(AbstractStorage):
         return self.get_download_path(path)
 
     @staticmethod
-    def blob_matches_manifest(blob, object_in_manifest):
+    def blob_matches_manifest(blob, object_in_manifest, enable_md5_checks=False):
         return GoogleStorage.compare_with_manifest(
             actual_size=blob.size,
             size_in_manifest=object_in_manifest['size'],
-            actual_hash=str(blob.hash),
+            actual_hash=str(blob.hash) if enable_md5_checks else None,
             hash_in_manifest=object_in_manifest['MD5']
         )
 
     @staticmethod
-    def file_matches_cache(src, cached_item, threshold=None):
+    def file_matches_cache(src, cached_item, threshold=None, enable_md5_checks=False):
         return GoogleStorage.compare_with_manifest(
             actual_size=src.stat().st_size,
             size_in_manifest=cached_item['size'],
-            actual_hash=AbstractStorage.generate_md5_hash(src),
+            actual_hash=AbstractStorage.generate_md5_hash(src) if enable_md5_checks else None,
             hash_in_manifest=cached_item['MD5']
         )
 
     @staticmethod
     def compare_with_manifest(actual_size, size_in_manifest, actual_hash=None, hash_in_manifest=None, threshold=None):
         sizes_match = actual_size == size_in_manifest
+        if not actual_hash:
+            return sizes_match
 
         hashes_match = (
             # this case comes from comparing blob hashes to manifest entries (in context of GCS)

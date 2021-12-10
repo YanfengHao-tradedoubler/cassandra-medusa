@@ -59,12 +59,15 @@ class RestoreNodeTest(unittest.TestCase):
         }
 
         self.config = MedusaConfig(
+            file_path=None,
             storage=_namedtuple_from_dict(StorageConfig, config['storage']),
             cassandra=_namedtuple_from_dict(CassandraConfig, config['cassandra']),
             monitoring={},
             ssh=None,
             checks=None,
-            logging=None
+            logging=None,
+            grpc=None,
+            kubernetes=None,
         )
 
         self.storage = Storage(config=self.config.storage)
@@ -153,7 +156,7 @@ class RestoreNodeTest(unittest.TestCase):
             # compute checksum of the whole file at once
             tf.seek(0)
             checksum_full = hashlib.md5(tf.read()).digest()
-            digest_full = base64.encodestring(checksum_full).decode('UTF-8').strip()
+            digest_full = base64.encodebytes(checksum_full).decode('UTF-8').strip()
 
             # compute checksum using default-size chunks
             tf.seek(0)

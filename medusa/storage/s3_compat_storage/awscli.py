@@ -22,6 +22,11 @@ import sys
 
 from retrying import retry
 
+from libcloud.storage.providers import get_driver, Provider
+from medusa import utils
+
+MAX_UP_DOWN_LOAD_RETRIES = 5
+
 
 class AwsCli(object):
     def __init__(self, storage):
@@ -42,6 +47,15 @@ class AwsCli(object):
             self._aws_cli_path = self.find_aws_cli()
         else:
             self._aws_cli_path = self._config.aws_cli_path
+
+        self.endpoint_url = None
+        if self._config.host is not None:
+            self.endpoint_url = '{}:{}'.format(self._config.host, self._config.port) \
+                if self._config.port is not None else self._config.host
+            if utils.evaluate_boolean(self._config.secure):
+                self.endpoint_url = 'https://{}'.format(self.endpoint_url)
+            else:
+                self.endpoint_url = 'http://{}'.format(self.endpoint_url)
 
         return self
 
@@ -73,7 +87,8 @@ class AwsCli(object):
         awscli_output = "/tmp/awscli_{0}.output".format(job_id)
         objects = []
         for src in srcs:
-            cmd = [self._aws_cli_path, "s3", "cp", str(src), "s3://{}/{}".format(bucket_name, dest)]
+            cmd = self._create_s3_cmd()
+            cmd.extend(["s3", "cp", str(src), "s3://{}/{}".format(bucket_name, dest)])
             objects.append(self.upload_file(cmd, dest, awscli_output))
 
         return objects
@@ -82,12 +97,29 @@ class AwsCli(object):
         job_id = str(uuid.uuid4())
         awscli_output = "/tmp/awscli_{0}.output".format(job_id)
         objects = []
-        cmd = [self._aws_cli_path, "s3", "cp", "s3://{}/{}".format(bucket_name, src), dest]
+        cmd = self._create_s3_cmd()
+        cmd.extend(["s3", "cp", "s3://{}/{}".format(bucket_name, src), dest])
         self.download_file(cmd, dest, awscli_output)
 
         return objects
 
-    @retry(stop_max_attempt_number=5, wait_fixed=5000)
+    def _create_s3_cmd(self):
+        cmd = [self._aws_cli_path]
+
+        if self.endpoint_url is not None:
+            cmd.extend(["--endpoint-url", self.endpoint_url])
+
+        if self._config.region is not None and self._config.region != "default":
+            cmd.extend(["--region", self._config.region])
+        elif not (self._config.storage_provider in [Provider.S3, "s3_compatible"]) and self._config.region == "default":
+            # Legacy libcloud S3 providers that were tied to a specific region such as s3_us_west_oregon
+            cmd.extend(["--region", get_driver(self._config.storage_provider).region_name])
+
+        return cmd
+
+    @retry(
+        stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES,
+        wait_exponential_multiplier=10000, wait_exponential_max=120000)
     def upload_file(self, cmd, dest, awscli_output):
         logging.debug(" ".join(cmd))
         with open(awscli_output, "w") as output:
@@ -111,7 +143,9 @@ class AwsCli(object):
             )
         )
 
-    @retry(stop_max_attempt_number=5, wait_fixed=5000)
+    @retry(
+        stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES,
+        wait_exponential_multiplier=10000, wait_exponential_max=120000)
     def download_file(self, cmd, dest, awscli_output):
         logging.debug(" ".join(cmd))
         with open(awscli_output, "w") as output:
@@ -134,7 +168,9 @@ class AwsCli(object):
             )
         )
 
-    @retry(stop_max_attempt_number=10, wait_fixed=1000)
+    @retry(
+        stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES,
+        wait_exponential_multiplier=10000, wait_exponential_max=120000)
     def get_blob(self, blob_name):
         # This needs to be retried as S3 is eventually consistent
         obj = self.storage.get_blob(blob_name)

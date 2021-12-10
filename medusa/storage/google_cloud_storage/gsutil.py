@@ -60,21 +60,36 @@ class GSUtil(object):
         self._env = dict(os.environ)
         return False
 
-    def cp(self, *, srcs, dst, max_retries=5):
+    def cp(self, *, srcs, dst, max_retries=5, parallel_process_count=1):
 
         job_id = str(uuid.uuid4())
         manifest_log = '/tmp/gsutil_{0}.manifest'.format(job_id)
         gsutil_output = '/tmp/gsutil_{0}.output'.format(job_id)
 
-        # We could use following gsutil options
-        # to specify multithreading options (enabled with '-m'):
-        # parallel_process_count = 4
-        # parallel_thread_count = 4
+        # We ran into surprising behaviour when trying to control network bandwidth consumption by tweaking
+        # process and thread counts.
+        # Despite reading all we could:
+        #  - Default settings of process and thread counts (https://git.io/JTISP)
+        #  - Allowance of parallelism considering OS (https://git.io/JTzpL)
+        #  - The actual implication of -m (https://git.io/JTzpY)
+        # We ended up seeing that it's only the presence of `-m` that makes any material difference.
+        #
+        # So if Medusa doesn't want parallelism (parallel_process_count==1), we'll skip setting -m.
+        # Otherwise we control process count and let the threads being default (5).
+        #
         # '-o', 'GSUtil:parallel_process_count={}'.format(parallel_process_count),
         # '-o', 'GSUtil:parallel_thread_count={}'.format(parallel_thread_count),
 
+        if parallel_process_count == str(1):
+            parallel_options = []
+        else:
+            parallel_options = [
+                '-m',
+                '-o', '\"GSUtil:parallel_process_count={}\"'.format(parallel_process_count),
+            ]
+
         cmd = ['gsutil',
-               '-m',
+               *parallel_options,
                'cp', '-c',
                '-L', manifest_log, '-I', str(dst)]
 

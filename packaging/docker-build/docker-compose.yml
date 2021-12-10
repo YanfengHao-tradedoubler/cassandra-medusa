@@ -15,10 +15,33 @@
 version: '2.1'
 
 services:
-  cassandra-medusa-builder:
+  cassandra-medusa-builder-focal:
     build:
       context: ../..
       dockerfile: packaging/docker-build/Dockerfile
+      args:
+        - BUILD_IMAGE=ubuntu:20.04
+        - EXTRA_PACKAGES=""
+    volumes:
+      - ../..:/usr/src/app/cassandra-medusa
+      - ../../packages:/usr/src/app/packages
+      - ./scripts:/usr/src/app/scripts
+  cassandra-medusa-builder-bionic:
+    build:
+      context: ../..
+      dockerfile: packaging/docker-build/Dockerfile
+      args:
+        - BUILD_IMAGE=ubuntu:18.04
+    volumes:
+      - ../..:/usr/src/app/cassandra-medusa
+      - ../../packages:/usr/src/app/packages
+      - ./scripts:/usr/src/app/scripts
+  cassandra-medusa-builder-buster:
+    build:
+      context: ../..
+      dockerfile: packaging/docker-build/Dockerfile
+      args:
+        - BUILD_IMAGE=debian:buster
     volumes:
       - ../..:/usr/src/app/cassandra-medusa
       - ../../packages:/usr/src/app/packages

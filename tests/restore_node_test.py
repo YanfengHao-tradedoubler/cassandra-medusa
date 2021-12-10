@@ -14,11 +14,17 @@
 # limitations under the License.
 
 import configparser
-import json
 import unittest
+from unittest import mock
+from unittest.mock import Mock
 
+from cassandra.util import Version
+from libcloud.common.base import BaseDriver
+
+from medusa import restore_node, storage
 from medusa.config import MedusaConfig, StorageConfig, _namedtuple_from_dict
-from medusa import restore_node
+from medusa.host_man import HostMan
+from medusa.storage import abstract_storage
 
 
 class RestoreNodeTest(unittest.TestCase):
@@ -32,13 +38,18 @@ class RestoreNodeTest(unittest.TestCase):
             'host_file_separator': ','
         }
         self.config = MedusaConfig(
+            file_path=None,
             storage=_namedtuple_from_dict(StorageConfig, config['storage']),
             monitoring={},
             cassandra=None,
             ssh=None,
             checks=None,
-            logging=None
+            logging=None,
+            grpc=None,
+            kubernetes=None,
         )
+        # Reset to ensure no stale singleton state exists
+        HostMan.reset()
 
     def test_get_node_tokens(self):
         with open("tests/resources/restore_node_tokenmap.json", 'r') as f:
@@ -50,63 +61,7 @@ class RestoreNodeTest(unittest.TestCase):
             tokens = restore_node.get_node_tokens('node3.mydomain.net', f)
             self.assertEqual(tokens, ['2', '3'])
 
-    def test_get_sections_to_restore(self):
-
-        # nothing skipped, both tables make it to restore
-        keep_keyspaces = {}
-        keep_tables = {}
-        manifest = [
-            {'keyspace': 'k1', 'columnfamily': 't1', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't2', 'objects': []}
-        ]
-        to_restore = restore_node.get_fqtns_to_restore(keep_keyspaces, keep_tables, json.dumps(manifest))
-        self.assertEqual({'k1.t1', 'k2.t2'}, to_restore)
-
-        # skipping one table (must be specified as a fqtn)
-        keep_keyspaces = {}
-        keep_tables = {'k2.t2'}
-        manifest = [
-            {'keyspace': 'k1', 'columnfamily': 't1', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't2', 'objects': []}
-        ]
-        to_restore = restore_node.get_fqtns_to_restore(keep_keyspaces, keep_tables, json.dumps(manifest))
-        self.assertEqual({'k2.t2'}, to_restore)
-
-        # saying only table name doesn't cause a keep
-        keep_keyspaces = {}
-        keep_tables = {'t2'}
-        manifest = [
-            {'keyspace': 'k1', 'columnfamily': 't1', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't2', 'objects': []}
-        ]
-        to_restore = restore_node.get_fqtns_to_restore(keep_keyspaces, keep_tables, json.dumps(manifest))
-        self.assertEqual(set(), to_restore)
-
-        # keeping the whole keyspace
-        keep_keyspaces = {'k2'}
-        keep_tables = {}
-        manifest = [
-            {'keyspace': 'k1', 'columnfamily': 't1', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't2', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't3', 'objects': []}
-        ]
-        to_restore = restore_node.get_fqtns_to_restore(keep_keyspaces, keep_tables, json.dumps(manifest))
-        self.assertEqual({'k2.t2', 'k2.t3'}, to_restore)
-
-    def test_get_sections_to_restore_with_cfids(self):
-
-        # lept tables must work also if the manifest has cfids
-        keep_keyspaces = {}
-        keep_tables = {'k2.t2'}
-        manifest = [
-            {'keyspace': 'k1', 'columnfamily': 't1-bigBadCfId', 'objects': []},
-            {'keyspace': 'k2', 'columnfamily': 't2-81ffe430e50c11e99f91a15641db358f', 'objects': []},
-        ]
-        to_restore = restore_node.get_fqtns_to_restore(keep_keyspaces, keep_tables, json.dumps(manifest))
-        self.assertEqual({'k2.t2-81ffe430e50c11e99f91a15641db358f'}, to_restore)
-
     def test_keyspace_is_allowed_to_restore(self):
-
         # the basic case when there's a table from k1
         keyspace, keep_auth, fqtns_to_restore = 'k1', False, {'k1.t1', 'k2.t2'}
         self.assertTrue(restore_node.keyspace_is_allowed_to_restore(keyspace, keep_auth, fqtns_to_restore))
@@ -132,6 +87,39 @@ class RestoreNodeTest(unittest.TestCase):
 
         keyspace, table, fqtns_to_restore = 'k1', 't1', {'k2.t1'}
         self.assertFalse(restore_node.table_is_allowed_to_restore(keyspace, table, fqtns_to_restore))
+
+    @mock.patch.object(abstract_storage.AbstractStorage, '__init__')
+    @mock.patch.object(storage.Storage, '__init__')
+    def test_capture_release_version_from_CLI(self, mock_storage, mock_abstract_storage):
+        # WHEN api_version is specified from CLI, and api_version is available from driver.
+        mock_abstract_storage.driver = BaseDriver(key=Mock(), api_version='5.0.0')
+        mock_storage.attach_mock(mock_abstract_storage, 'storage_driver')
+        restore_node.capture_release_version(mock_storage, '4.0.0')
+
+        # THEN expect the api_version from driver is captured.
+        self.assertEqual(HostMan.get_release_version(), Version('4.0.0'))
+
+    @mock.patch.object(abstract_storage.AbstractStorage, '__init__')
+    @mock.patch.object(storage.Storage, '__init__')
+    def test_capture_release_version_from_driver(self, mock_storage, mock_abstract_storage):
+        # WHEN api_version from driver is specified and no specified CLI version.
+        mock_abstract_storage.driver = BaseDriver(key=Mock(), api_version='5.0.0')
+        mock_storage.attach_mock(mock_abstract_storage, 'storage_driver')
+        restore_node.capture_release_version(mock_storage, None)
+
+        # THEN expect the api_version from driver is captured.
+        self.assertEqual(HostMan.get_release_version(), Version('5.0.0'))
+
+    @mock.patch.object(abstract_storage.AbstractStorage, '__init__')
+    @mock.patch.object(storage.Storage, '__init__')
+    def test_capture_release_version_from_default(self, mock_storage, mock_abstract_storage):
+        # WHEN api_version is not available from either CLI or the driver.
+        mock_abstract_storage.driver = BaseDriver(key=Mock())
+        mock_storage.attach_mock(mock_abstract_storage, 'storage_driver')
+        restore_node.capture_release_version(mock_storage, None)
+
+        # THEN expect default release version will be captured.
+        self.assertEqual(HostMan.get_release_version(), Version(HostMan.DEFAULT_RELEASE_VERSION))
 
 
 if __name__ == '__main__':
