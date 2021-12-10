@@ -53,7 +53,8 @@ setuptools.setup(
         'pycrypto>=2.6.1',
         'retrying>=1.3.3',
         'parallel-ssh==1.9.1',
-        'requests==2.22.0'
+        'requests==2.22.0',
+        'dnspython>=2.0.0',
     ],
     extras_require={
         'S3': ["awscli>=1.16.291"],
